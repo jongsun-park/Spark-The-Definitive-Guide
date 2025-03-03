@@ -581,3 +581,230 @@ AdaptiveSparkPlan isFinalPlan=false
 - 복잡한 트랜스포메이션 작업 실행 단계
 
 # 3. 스파크 기능 둘러보기
+
+![스파크의 기능](./images/3-1.png)
+
+스파크 구성
+
+- 저수준 API
+- 구조적 API
+- 표준 라이브러리
+  - 그래프 분석
+  - 머신러닝
+  - 스트리밍
+  - 컴퓨팅 및 스토리지 시스템과의 통합을 돕는 역할
+
+## 3.1 운영용 애플리케이션 실행하기
+
+`spark-submit`
+
+- 대화형 셀에서 개발한 프로그램을 운영용 애플리케이션으로 전환
+- 애플리케이션 코드를 클러스터에 전송해 실행시키는 역할
+- 스탠드얼론, 메소스, YARN 클러스터 매니저를 이용해 실행
+
+`spark-submit --master local pi.py 10`
+
+- pi.py: 파이 값을 특정 자릿수 까지 계산
+- `--master local`: 스파크가 지원하는 클러스터 매니저를 지정
+
+## 3.2 Dataset: 타입 안정성을 제공하는 구조적 API
+
+- 자바, 스칼라 (정적 타입 코드) 지원
+- 파이썬, R(동적 타입 언어)와 사용 불가
+
+Dataset API
+
+- 데이터프레임 레코드를 고정 타입형 컬렉션으로 다룰 수 있는 기능을 제공
+- 타입 안정성을 지원: 초기화에 사용된 클래스 대산 다른 클래스를 사용해 접근 할 수 없다.
+- 대규모 애플리케이션 개발하는 데 특히 유용
+
+Dataset 클래스
+
+- 내부 객체의 데이터 타입을 매개변수로 사용
+- `Dataset[Person]`: Person 클래스의 객체만 가질 수 있다.
+
+Dataset은 필요한 경우에 선택적으로 사용할 수 있다.
+
+- 데이터 타입을 정의하고 함수를 사용
+- 스파크는 처리를 마치고 결과를 데이터프레임으로 자동으로 변환
+
+`collect()`, `take()`를 호출하면 Dataset에 매개변수로 지정한 타입의 객체를 반환한다.
+
+- 코드 변경 없이 타입 안정성 보장
+- 데이터를 안전하게 처리 가능
+
+## 3.3 구조적 스트리밍
+
+- 구조적 API로 개발된 배치 모드의 연산을 스트리밍 방식으로 실행 가능
+- 지연 시간 감소, 증분 처리 가능
+
+증분처리란? (Bucketing)
+
+- 데이터를 고정된 개수의 버킷(bucket, 그룹)으로 나누어 저장하는 기법.
+- 파티셔닝: **디렉터리 단위로** 데이터를 나누는 방식
+- 중분처리: **파일 내부에서** 데이터를 균등하게 나누는 방식
+- 따라서 조인, 그룹 연산이 많을 경우 중분 처리가 유리합니다.
+
+[소매 데이터 분석 - 시계열 데이터](./notebooks/3-3.ipynb)
+
+세션 생성 및 파일 읽기 (정적 데이터프레임)
+
+```py
+from pyspark.sql import SparkSession
+# Create Spark session
+spark = SparkSession.builder.appName("MyApp").getOrCreate()
+
+staticDataFrame = spark.read.format("csv")\
+  .option("header", "true")\
+  .option("inferSchema", "true")\
+  .load("../data/retail-data/by-day/*.csv")
+
+staticDataFrame.createOrReplaceTempView("retail_data")
+staticSchema = staticDataFrame.schema
+```
+
+시계열 데이터 분석
+
+- 데이터를 그룹화하고 집계하는 방법 필요
+- 특정 고객이 대량으로 구매하는 영업 시간을 고려
+- ex. 구매비용 컬럼을 추가하고 고객이 가장 많이 소비한 날을 찾음
+
+윈도우 함수
+
+- 집계 시 시계열 컬럼을 기준으로 각 날짜에 대한 전체 데이터를 가지는 윈도우를 구성
+- 윈도우: 간격을 통해 처리 요건을 명시
+
+스파크
+
+- 관련 날짜의 데이터를 그룹화 함
+
+```py
+from pyspark.sql.functions import window, col
+
+# 고객별 하루 단위 총 지출"을 계산하는 코드입니다.
+# 즉, 같은 고객(CustomerId)의 구매 내역을 하루 단위로 묶어서 총 비용을 계산합니다.
+# 이를 위해 window 함수를 사용하여 날짜(InvoiceDate)를 기준으로 "1일 단위"의 시간 창(Window)을 생성합니다.
+# 이후, 고객별(CustomerId) 및 날짜별(InvoiceDate) 총 비용(total_cost)을 계산합니다.
+# 마지막으로, 상위 5개의 결과를 출력합니다.
+
+staticDataFrame\
+  .selectExpr(
+    "CustomerId",
+    "(UnitPrice * Quantity) as total_cost",
+    "InvoiceDate")\
+  .groupBy(
+    col("CustomerId"), window(col("InvoiceDate"), "1 day"))\
+  .sum("total_cost")\
+  .show(5)
+```
+
+결과값
+
+```
+[Stage 4:>                                                        (0 + 10) / 10]
++----------+--------------------+-----------------+
+|CustomerId|              window|  sum(total_cost)|
++----------+--------------------+-----------------+
+|   16057.0|{2011-12-05 00:00...|            -37.6|
+|   14126.0|{2011-11-29 00:00...|643.6300000000001|
+|   13500.0|{2011-11-16 00:00...|497.9700000000001|
+|   17160.0|{2011-11-08 00:00...|516.8499999999999|
+|   15608.0|{2011-11-11 00:00...|            122.4|
++----------+--------------------+-----------------+
+only showing top 5 rows
+```
+
+로컬 모드에 적합한 셔플 파티션 수 설정: 5 (기본값: 200)
+
+```py
+spark.conf.set("spark.sql.shuffle.partitions", "5")
+```
+
+스트리밍으로 데이터 읽기
+
+- read -> readStream
+- maxFilesPerTrigger: 한 번에 읽을 파일 수 설정
+
+```py
+streamingDataFrame = spark.readStream\
+  .schema(staticSchema)\
+  .option("maxFilesPerTrigger", 1)\
+  .format("csv")\
+  .option("header", "true")\
+  .load("../data/retail-data/by-day/*.csv")
+```
+
+데이터프레임 스트리밍 유형인지 확인
+
+```py
+streamingDataFrame.isStreaming
+```
+
+총 판매 금액 계산
+
+```py
+purchaseByCustomerPerHour = streamingDataFrame\
+  .selectExpr(
+    "CustomerId",
+    "(UnitPrice * Quantity) as total_cost",
+    "InvoiceDate")\
+  .groupBy(
+    col("CustomerId"), window(col("InvoiceDate"), "1 day"))\
+  .sum("total_cost")
+```
+
+지연 연산 -> 스트리밍 액션 호출
+
+스트리밍 액션
+
+- 트리거가 실행된 다음 데이터를 갱신하게 될 인메모리 테이블에 데이터를 저장한다.
+- 예제. 파일마다 트리거를 실행
+- 이전 집계값보다 더 큰 값이 발생한 경우에만 인메모리 테이블을 갱신한다.
+
+```py
+purchaseByCustomerPerHour.writeStream\
+  .format("memory")\
+  .queryName("customer_purchases")\
+  .outputMode("complete")\
+  .start()
+
+# purchaseByCustomerPerHour.writeStream\
+#   .format("memory")\ // memory: 테이블을 메모리에 저장
+#   .queryName("customer_purchases")\ // 인메모리에 저장된 테이블명
+#   .outputMode("complete")\ // complete: 모든 카운트 수행 결과를 테이블에 저장
+#   .start()
+```
+
+스트림이 시작되면 실행 결과가 어떠한 형태로 인메모리 테이블에 저장되는지 확인
+
+```py
+spark.sql("""
+  SELECT *
+  FROM customer_purchases
+  ORDER BY `sum(total_cost)` DESC
+  """)\
+  .show(5)
+```
+
+```
++----------+--------------------+------------------+
+|CustomerId|              window|   sum(total_cost)|
++----------+--------------------+------------------+
+|      NULL|{2011-03-29 01:00...| 33521.39999999998|
+|      NULL|{2010-12-21 00:00...|31347.479999999938|
+|   18102.0|{2010-12-07 00:00...|          25920.37|
+|      NULL|{2010-12-10 00:00...|25399.560000000012|
+|      NULL|{2010-12-17 00:00...|25371.769999999768|
++----------+--------------------+------------------+
+only showing top 5 rows
+```
+
+## 3.4 머신러닝과 고급 분석
+
+## 3.5 저수준 API
+
+## 3.6 SparkR
+
+## 3.7 스파크의 에코시스템과 패키지
+
+## 3.8 정리

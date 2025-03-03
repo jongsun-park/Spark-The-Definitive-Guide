@@ -1,0 +1,4 @@
+# ignore all files in data directory
+data
+*.csv
+*.json
