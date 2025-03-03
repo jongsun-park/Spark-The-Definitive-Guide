@@ -2,3 +2,7 @@
 data
 *.csv
 *.json
+
+# ignore all files in tmp directory
+# ex. fitted models
+tmp
